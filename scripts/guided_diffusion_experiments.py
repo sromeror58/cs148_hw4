@@ -50,7 +50,7 @@ def plot_grid(images: np.ndarray, ncols: int = 8, out: str = "grid.png", title: 
     for i, ax in enumerate(axes):
         ax.imshow(images[i] if i < N else np.zeros((H, W, C), dtype=np.uint8))
         ax.axis("off")
-    fig.suptitle(title)
+    fig.suptitle(title, fontsize=11)
     plt.tight_layout()
     plt.savefig(out, dpi=100, bbox_inches="tight")
     plt.close()
@@ -68,8 +68,10 @@ def plot_unconditional(npz_path: str, out: str = "7_1_unconditional.png"):
         npz_path: Path to .npz from guided-diffusion unconditional sampler.
         out:      Output path for the 256×2048 figure.
     """
-    # TODO (7.1) — load samples, select 8, call plot_grid
-    raise NotImplementedError
+    images = load_npz_samples(npz_path)  # (N, H, W, 3)
+    images = images[:8]                   # take first 8
+    plot_grid(images, ncols=8, out=out,
+              title="Unconditional 256×256 generation (Problem 7.1)")
 
 
 # ------------------------------------------------------------------
@@ -87,8 +89,14 @@ def plot_progressive(
                            (first = pure noise, last = final image).
         out:               Output path for the 256×2048 figure.
     """
-    # TODO (7.2) — load one image from each npz, arrange as a timeline
-    raise NotImplementedError
+    frames = []
+    for path in intermediate_npzs[:8]:
+        imgs = load_npz_samples(path)
+        frames.append(imgs[0])  # one image per checkpoint
+
+    frames = np.stack(frames, axis=0)   # (8, H, W, 3)
+    plot_grid(frames, ncols=8, out=out,
+              title="Progressive generation — noise → image (Problem 7.2)")
 
 
 # ------------------------------------------------------------------
@@ -102,8 +110,10 @@ def plot_noise_interpolation(npz_path: str, out: str = "7_3_interpolation.png"):
         npz_path: .npz from guided-diffusion run with interpolated noises.
         out:      Output path for the 256×2048 figure.
     """
-    # TODO (7.3)
-    raise NotImplementedError
+    images = load_npz_samples(npz_path)  # (8, H, W, 3)
+    images = images[:8]
+    plot_grid(images, ncols=8, out=out,
+              title=r"Noise interpolation $z_i = (1-i/7)z_0 + (i/7)z_7$ (Problem 7.3)")
 
 
 # ------------------------------------------------------------------
@@ -118,8 +128,11 @@ def plot_conditional(npz_path: str, class_labels: list[int], out: str = "7_4_con
         class_labels: List of 8 ImageNet class IDs used (for the title).
         out:          Output path.
     """
-    # TODO (7.4)
-    raise NotImplementedError
+    images = load_npz_samples(npz_path)
+    images = images[:8]
+    label_str = ", ".join(str(c) for c in class_labels[:8]) if class_labels else ""
+    title = f"Class-conditional generation, classes: [{label_str}] (Problem 7.4)"
+    plot_grid(images, ncols=8, out=out, title=title)
 
 
 # ------------------------------------------------------------------
@@ -138,8 +151,25 @@ def plot_classifier_scale_sweep(
         scale_values: List of 8 classifier_scale values (monotonically increasing).
         out:          Output path for the 512×2048 figure.
     """
-    # TODO (7.5)
-    raise NotImplementedError
+    n_scales = len(npz_paths)
+    N, H, W, C = load_npz_samples(npz_paths[0]).shape
+
+    fig, axes = plt.subplots(2, n_scales, figsize=(n_scales * W / 100, 2 * H / 100))
+
+    for col, (path, scale) in enumerate(zip(npz_paths, scale_values)):
+        imgs = load_npz_samples(path)
+        for row in range(2):
+            ax = axes[row, col]
+            ax.imshow(imgs[row] if row < len(imgs) else np.zeros((H, W, C), dtype=np.uint8))
+            ax.axis("off")
+            if row == 0:
+                ax.set_title(f"s={scale}", fontsize=8)
+
+    fig.suptitle("Classifier scale sweep (Problem 7.5)", fontsize=11)
+    plt.tight_layout()
+    plt.savefig(out, dpi=100, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out}")
 
 
 if __name__ == "__main__":
@@ -158,4 +188,7 @@ if __name__ == "__main__":
     elif args.task == "7_4":
         plot_conditional(args.npz[0], class_labels=[], out=args.out or "7_4_conditional.png")
     elif args.task == "7_5":
-        plot_classifier_scale_sweep(args.npz, scale_values=[], out=args.out or "7_5_scale_sweep.png")
+        scales = [float(s) for s in args.npz[1:]] if len(args.npz) > 1 else []
+        npz_list = [args.npz[0]] * 8 if len(args.npz) == 1 else args.npz[:8]
+        plot_classifier_scale_sweep(npz_list, scale_values=scales,
+                                    out=args.out or "7_5_scale_sweep.png")

@@ -56,21 +56,23 @@ def score_loss(sde: VPSDE, model: torch.nn.Module, x0: torch.Tensor, device) -> 
     """DSM training loss for the VP score model.
 
     Samples a random continuous time t ~ Uniform(0, 1), noises x0 to x_t
-    via the VP marginal, and regresses the score (or equivalently the noise).
+    via the VP marginal, and regresses the noise (equivalent to Song21 Eq. (7)
+    with weighting λ(t) = σ(t)²).
 
     Args:
         sde:    VPSDE instance.
-        model:  Score network s_θ.
+        model:  Score network s_θ; model(x_t, t) predicts ε.
         x0:     Clean images, shape (B, 1, 28, 28) in [-1, 1].
         device: Compute device.
 
     Returns:
         Scalar loss.
     """
-    # TODO (5.A.iii / 5.B setup) — implement the DSM loss.
-    # Hint: sample t ~ Uniform(0,1), call sde.marginal(), call model(x_t, t),
-    #       and compute the weighted MSE as in Song21 Eq. (7).
-    raise NotImplementedError
+    B = x0.size(0)
+    t = torch.rand(B, device=device)
+    x_t, eps = sde.marginal(x0, t)
+    eps_theta = model(x_t, t)
+    return F.mse_loss(eps_theta, eps)
 
 
 def main():

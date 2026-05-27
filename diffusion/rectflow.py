@@ -5,8 +5,6 @@ Part 6 of EE/CS 148B HW4.
 
 Reference: Liu et al. (2023) "Flow Straight and Fast: Learning to Generate
 and Transfer Data with Rectified Flow" (ICLR 2023).
-
-Students implement every method marked TODO.
 """
 
 from __future__ import annotations
@@ -48,9 +46,12 @@ class RectifiedFlow:
             (x_t, x0, vel): interpolated point, noise used, and regression
                             target velocity (x1 - x0), all shape (B, *).
         """
-        # TODO (6.A) — sample x0 ~ N(0,I), form x_t, compute vel
-        # Hint: broadcast t to match x1's spatial dimensions before multiplying.
-        raise NotImplementedError
+        x0 = torch.randn_like(x1)
+        # broadcast t: (B,) -> (B, 1, 1, 1) for image tensors
+        t_broad = t.view(x1.size(0), *([1] * (x1.dim() - 1)))
+        x_t = (1 - t_broad) * x0 + t_broad * x1
+        vel = x1 - x0
+        return x_t, x0, vel
 
     def loss(self, v_theta: nn.Module, x1: Tensor) -> Tensor:
         """Rectified Flow training loss (RF objective).
@@ -65,8 +66,11 @@ class RectifiedFlow:
         Returns:
             Scalar loss.
         """
-        # TODO (6.A)
-        raise NotImplementedError
+        B = x1.size(0)
+        t = torch.rand(B, device=x1.device)
+        x_t, _, vel = self.forward_process(x1, t)
+        v_pred = v_theta(x_t, t)
+        return F.mse_loss(v_pred, vel)
 
     # ------------------------------------------------------------------
     # 6.B  Euler ODE sampler
@@ -96,8 +100,16 @@ class RectifiedFlow:
         Returns:
             Generated samples X_1, shape (B, C, H, W).
         """
-        # TODO (6.B)
-        raise NotImplementedError
+        dt = 1.0 / num_steps
+        x = torch.randn(shape, device=device)
+
+        for i in range(num_steps):
+            t_val = i * dt
+            t_batch = torch.full((shape[0],), t_val, device=device)
+            v = v_theta(x, t_batch)
+            x = x + v * dt
+
+        return x
 
     # ------------------------------------------------------------------
     # 6.C  Reflow  (data generation only — retraining uses loss() above)
@@ -130,5 +142,27 @@ class RectifiedFlow:
         Returns:
             (x0_all, x1_all): tensors of shape (n_pairs, C, H, W) on CPU.
         """
-        # TODO (6.C)
-        raise NotImplementedError
+        v_theta.eval()
+        dt = 1.0 / num_steps
+        x0_list, x1_list = [], []
+        n_done = 0
+
+        while n_done < n_pairs:
+            bsz = min(batch_size, n_pairs - n_done)
+            x0 = torch.randn(bsz, *image_shape, device=device)
+            x = x0.clone()
+
+            for i in range(num_steps):
+                t_val = i * dt
+                t_batch = torch.full((bsz,), t_val, device=device)
+                v = v_theta(x, t_batch)
+                x = x + v * dt
+
+            x0_list.append(x0.cpu())
+            x1_list.append(x.cpu())
+            n_done += bsz
+
+            if n_done % 5000 == 0 or n_done >= n_pairs:
+                print(f"  Generated {n_done}/{n_pairs} pairs")
+
+        return torch.cat(x0_list, dim=0)[:n_pairs], torch.cat(x1_list, dim=0)[:n_pairs]

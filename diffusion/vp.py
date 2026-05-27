@@ -5,9 +5,6 @@ Part 5 of EE/CS 148B HW4.
 
 Reference: Song et al. (2021) "Score-Based Generative Modeling through
 Stochastic Differential Equations" (Song21), Appendix B & D.
-
-Students implement every method marked TODO.  Methods marked PROVIDED
-are complete and should not be modified.
 """
 
 from __future__ import annotations
@@ -51,8 +48,7 @@ class VPSDE:
 
         Reference: Eq. (32) of Song21.
         """
-        # TODO (5.A.ii)
-        raise NotImplementedError
+        return self.beta_min + (self.beta_max - self.beta_min) * t
 
     def c(self, t: Tensor) -> Tensor:
         """c(t) = exp(-½ ∫_0^t β(s) ds) — the signal decay factor.
@@ -68,8 +64,8 @@ class VPSDE:
 
         Reference: Eq. (33) of Song21.
         """
-        # TODO (5.A.ii)
-        raise NotImplementedError
+        integral = self.beta_min * t + 0.5 * (self.beta_max - self.beta_min) * t ** 2
+        return torch.exp(-0.5 * integral)
 
     def sigma(self, t: Tensor) -> Tensor:
         """σ(t) = √(1 - c(t)²) — the noise standard deviation.
@@ -80,8 +76,7 @@ class VPSDE:
         Returns:
             σ(t), same shape as t.
         """
-        # TODO (5.A.iii)
-        raise NotImplementedError
+        return torch.sqrt((1 - self.c(t) ** 2).clamp(min=0.0))
 
     def drift(self, x: Tensor, t: Tensor) -> Tensor:
         """Drift coefficient  f(x, t) = -½ β(t) x.
@@ -93,8 +88,11 @@ class VPSDE:
         Returns:
             Drift f(x, t), same shape as x.
         """
-        # TODO (5.A.i)
-        raise NotImplementedError
+        beta_t = self.beta(t)
+        # broadcast (B,) -> (B, 1, 1, 1) for image tensors
+        for _ in range(x.dim() - 1):
+            beta_t = beta_t.unsqueeze(-1)
+        return -0.5 * beta_t * x
 
     def diffusion(self, t: Tensor) -> Tensor:
         """Diffusion coefficient  g(t) = √β(t).
@@ -105,8 +103,7 @@ class VPSDE:
         Returns:
             g(t), same shape as t.
         """
-        # TODO (5.A.i)
-        raise NotImplementedError
+        return torch.sqrt(self.beta(t))
 
     def marginal(self, x0: Tensor, t: Tensor) -> tuple[Tensor, Tensor]:
         """Sample from the forward marginal  q(x_t | x_0).
@@ -121,12 +118,25 @@ class VPSDE:
         Returns:
             (x_t, eps): noised sample and the noise used, both shape (B, *).
         """
-        # TODO (5.A.iii)
-        raise NotImplementedError
+        c_t = self.c(t)
+        s_t = self.sigma(t)
+        # broadcast (B,) -> (B, 1, 1, 1)
+        for _ in range(x0.dim() - 1):
+            c_t = c_t.unsqueeze(-1)
+            s_t = s_t.unsqueeze(-1)
+        eps = torch.randn_like(x0)
+        x_t = c_t * x0 + s_t * eps
+        return x_t, eps
 
     # ------------------------------------------------------------------
     # 5.B  Samplers
     # ------------------------------------------------------------------
+
+    def _broadcast(self, v: Tensor, ndim: int) -> Tensor:
+        """Unsqueeze v from (B,) to (B, 1, ..., 1) with total ndim dims."""
+        for _ in range(ndim - 1):
+            v = v.unsqueeze(-1)
+        return v
 
     @torch.no_grad()
     def euler_maruyama(
@@ -153,10 +163,36 @@ class VPSDE:
             Generated samples, shape (B, C, H, W), values in [-1, 1].
         """
         num_steps = num_steps or self.T
-        # TODO (5.B.i) — implement the EM sampler
-        # Hint: time runs from t=1 down to t≈0 in steps of Δt = 1/num_steps.
-        #       At t=1, initialise x ~ N(0, σ(1)² I).
-        raise NotImplementedError
+        dt = 1.0 / num_steps
+        B = shape[0]
+        ndim = len(shape)
+
+        # Initialise x ~ N(0, σ(1)² I)
+        t1 = torch.ones(B, device=device)
+        sigma_T = self._broadcast(self.sigma(t1), ndim)
+        x = sigma_T * torch.randn(shape, device=device)
+
+        # Reverse: t from 1 down to dt
+        for i in range(num_steps):
+            t_val = 1.0 - i * dt
+            t_val = max(t_val, 1e-5)
+            t_batch = torch.full((B,), t_val, device=device)
+
+            # Score: model predicts noise ε_θ, score = -ε_θ / σ(t)
+            eps_theta = score_model(x, t_batch)
+            sigma_t = self._broadcast(self.sigma(t_batch), ndim).clamp(min=1e-8)
+            score = -eps_theta / sigma_t
+
+            beta_t = self._broadcast(self.beta(t_batch), ndim)
+
+            # Reverse SDE EM update:
+            # x_{t-dt} = x + [f(x,t) - g²·score]·dt + g·√dt·z
+            # f = -½β·x, g² = β
+            z = torch.randn_like(x) if i < num_steps - 1 else torch.zeros_like(x)
+            drift_term = -0.5 * beta_t * x - beta_t * score
+            x = x + drift_term * dt + torch.sqrt(beta_t * dt) * z
+
+        return x.clamp(-1, 1)
 
     @torch.no_grad()
     def predictor_corrector(
@@ -185,8 +221,99 @@ class VPSDE:
             Generated samples, shape (B, C, H, W), values in [-1, 1].
         """
         num_steps = num_steps or self.T
-        # TODO (5.B.ii)
-        raise NotImplementedError
+        dt = 1.0 / num_steps
+        B = shape[0]
+        ndim = len(shape)
+
+        # Initialise x ~ N(0, σ(1)² I)
+        t1 = torch.ones(B, device=device)
+        sigma_T = self._broadcast(self.sigma(t1), ndim)
+        x = sigma_T * torch.randn(shape, device=device)
+
+        for i in range(num_steps):
+            t_val = 1.0 - i * dt
+            t_val = max(t_val, 1e-5)
+            t_batch = torch.full((B,), t_val, device=device)
+
+            # ---- Corrector: annealed Langevin dynamics ----
+            for _ in range(n_corrector):
+                eps_theta = score_model(x, t_batch)
+                sigma_t = self._broadcast(self.sigma(t_batch), ndim).clamp(min=1e-8)
+                score = -eps_theta / sigma_t
+
+                z = torch.randn_like(x)
+                # Per-sample L2 norms for adaptive step size
+                score_norm = score.flatten(1).norm(dim=1)  # (B,)
+                z_norm = z.flatten(1).norm(dim=1)           # (B,)
+                score_norm = self._broadcast(score_norm, ndim).clamp(min=1e-8)
+                z_norm = self._broadcast(z_norm, ndim)
+
+                eps_step = 2.0 * (snr * z_norm / score_norm) ** 2
+                x = x + eps_step * score + torch.sqrt(2.0 * eps_step) * z
+
+            # ---- Predictor: EM step ----
+            eps_theta = score_model(x, t_batch)
+            sigma_t = self._broadcast(self.sigma(t_batch), ndim).clamp(min=1e-8)
+            score = -eps_theta / sigma_t
+
+            beta_t = self._broadcast(self.beta(t_batch), ndim)
+            z = torch.randn_like(x) if i < num_steps - 1 else torch.zeros_like(x)
+            drift_term = -0.5 * beta_t * x - beta_t * score
+            x = x + drift_term * dt + torch.sqrt(beta_t * dt) * z
+
+        return x.clamp(-1, 1)
+
+    @torch.no_grad()
+    def ddim_sample(
+        self,
+        score_model: nn.Module,
+        shape: tuple[int, ...],
+        num_steps: int | None = None,
+        device: str | torch.device = "cpu",
+    ) -> Tensor:
+        """Deterministic DDIM / probability-flow ODE sampler.
+
+        Uses the continuous-time DDIM update rule (η=0):
+            x_s = (c(s)/c(t))·x_t + [σ(s) - σ(t)·c(s)/c(t)]·ε_θ(x_t, t)
+
+        Args:
+            score_model: Trained score network.
+            shape:       Output shape (B, C, H, W).
+            num_steps:   Number of ODE steps.
+            device:      Target device.
+
+        Returns:
+            Generated samples, shape (B, C, H, W).
+        """
+        num_steps = num_steps or self.T
+        B = shape[0]
+        ndim = len(shape)
+
+        # Time schedule from t=1 to t=0
+        times = torch.linspace(1.0, 0.0, num_steps + 1, device=device)
+
+        t1 = torch.ones(B, device=device)
+        sigma_T = self._broadcast(self.sigma(t1), ndim)
+        x = sigma_T * torch.randn(shape, device=device)
+
+        for i in range(num_steps):
+            t_cur = times[i].item()
+            t_next = times[i + 1].item()
+            t_batch = torch.full((B,), t_cur, device=device)
+
+            eps_theta = score_model(x, t_batch)
+
+            c_t = self._broadcast(self.c(t_batch), ndim).clamp(min=1e-8)
+            s_t = self._broadcast(self.sigma(t_batch), ndim)
+
+            t_next_batch = torch.full((B,), max(t_next, 1e-5), device=device)
+            c_s = self._broadcast(self.c(t_next_batch), ndim)
+            s_s = self._broadcast(self.sigma(t_next_batch), ndim)
+
+            # Continuous-time DDIM (η=0)
+            x = (c_s / c_t) * x + (s_s - s_t * c_s / c_t) * eps_theta
+
+        return x.clamp(-1, 1)
 
     # ------------------------------------------------------------------
     # 5.D  Inverse problems (EC)
@@ -223,5 +350,38 @@ class VPSDE:
             Reconstructed images, shape (B, C, H, W).
         """
         num_steps = num_steps or self.T
-        # TODO (EC 5.D)
-        raise NotImplementedError
+        dt = 1.0 / num_steps
+        B = corrupted.shape[0]
+        ndim = corrupted.dim()
+        shape = corrupted.shape
+
+        corrupted = corrupted.to(device)
+        mask = mask.to(device)
+
+        # Initialise x ~ N(0, σ(1)² I)
+        t1 = torch.ones(B, device=device)
+        sigma_T = self._broadcast(self.sigma(t1), ndim)
+        x = sigma_T * torch.randn(shape, device=device)
+
+        for i in range(num_steps):
+            t_val = 1.0 - i * dt
+            t_val = max(t_val, 1e-5)
+            t_batch = torch.full((B,), t_val, device=device)
+
+            # Replace known pixels with forward-noised clean values
+            x_known, _ = self.marginal(corrupted, t_batch)
+            x = mask * x_known + (1 - mask) * x
+
+            # Standard EM reverse step
+            eps_theta = score_model(x, t_batch)
+            sigma_t = self._broadcast(self.sigma(t_batch), ndim).clamp(min=1e-8)
+            score = -eps_theta / sigma_t
+
+            beta_t = self._broadcast(self.beta(t_batch), ndim)
+            z = torch.randn_like(x) if i < num_steps - 1 else torch.zeros_like(x)
+            drift_term = -0.5 * beta_t * x - beta_t * score
+            x = x + drift_term * dt + torch.sqrt(beta_t * dt) * z
+
+        # Final replacement of known pixels with clean values
+        x = mask * corrupted + (1 - mask) * x
+        return x.clamp(-1, 1)
